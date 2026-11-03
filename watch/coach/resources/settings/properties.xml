@@ -1,0 +1,6 @@
+<properties>
+    <property id="token" type="string"></property>
+    <property id="baseUrl" type="string">https://example.org</property>
+    <property id="pair" type="boolean">true</property>
+    <property id="brand" type="string">Trailhead</property>
+</properties>

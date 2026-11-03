@@ -1,0 +1,11 @@
+node_modules/
+.venv/
+build/
+data/
+__pycache__/
+web/vendor/pyodide/
+web/py/engine/
+web/py/manifest.json
+web/watch/
+*.der
+*.pem
