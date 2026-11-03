@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main, auto-sync]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Python syntax
+        run: python -m compileall -q engine server.py tools web/py
+
+      - name: JavaScript syntax
+        run: for f in web/*.js tools/*.mjs; do node --check "$f"; done
+
+      - name: Plan engine (native)
+        run: |
+          pip install numpy
+          python tools/bundle_engine.py
+          cd web/py && python - <<'PY'
+          import datetime as dt, sys
+          sys.path.insert(0, '.')
+          import trailhead as T
+          today = dt.date.today()
+          st = T.new_state({'athlete': {'age': 35}, 'race': {'name': 'CI Marathon', 'date': (today + dt.timedelta(weeks=16)).isoformat()},
+                            'recent': {'race_km': 10, 'race_min': 50}, 'current': {'runs_per_week': 4, 'easy_min': 40, 'long_min': 90},
+                            'availability': {d: {'primary': m} for d, m in zip(T.DAYS, (0, 60, 45, 60, 0, 150, 90))}}, today)
+          r = T.refresh(st, today)
+          s = T.season(st, today)
+          assert r['days'] and 150 < r['prediction']['p50'] < 400, r['prediction']
+          assert s['days'][-1]['kind'] == 'race', s['days'][-1]['kind']
+          print('plan ok:', r['days'][0]['title'], round(r['prediction']['p50']), 'min,', len(s['days']), 'days')
+          PY
+
+      - name: Browser runtime
+        run: tools/fetch_pyodide.sh
+
+      - name: End-to-end (setup → plan → watch pairing → sync → upload)
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright-core install --with-deps chromium
+          PORT=3041 python server.py > server.log 2>&1 &
+          sleep 2
+          TUNE=15 OUT=e2e node tools/test_e2e.mjs http://127.0.0.1:3041
+
+      - name: Screenshots on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e
+          path: |
+            e2e/
+            server.log

@@ -1,0 +1,16 @@
+name: Support another watch
+description: Ask for a Garmin model that isn't supported yet
+labels: [watch]
+body:
+  - type: input
+    id: model
+    attributes:
+      label: Watch model
+      placeholder: Forerunner 570 (47 mm)
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: What the setup page said when you plugged it in, if you tried.

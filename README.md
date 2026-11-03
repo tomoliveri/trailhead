@@ -4,6 +4,8 @@
 
 <h1 align="center">Trailhead</h1>
 
+<p align="center"><a href="https://github.com/tomoliveri/trailhead/actions/workflows/ci.yml"><img src="https://github.com/tomoliveri/trailhead/actions/workflows/ci.yml/badge.svg" alt="CI"></a></p>
+
 <p align="center">Marathon training on your Garmin.<br>
 Tell it your race and the time you’ve got each week. It builds the plan, puts a coach on your watch, and changes the plan as you train.</p>
 

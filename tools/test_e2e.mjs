@@ -8,7 +8,7 @@ fs.mkdirSync(OUT, { recursive: true });
 const exe = process.env.CHROME || `${process.env.HOME}/Library/Caches/ms-playwright/chromium-1243/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`;
 const browser = process.env.BROWSER === 'firefox'
   ? await pw._bidiFirefox.launch({ executablePath: '/Applications/Firefox.app/Contents/MacOS/firefox', headless: true })
-  : await chromium.launch({ executablePath: exe, headless: true });
+  : await chromium.launch({ executablePath: fs.existsSync(exe) ? exe : undefined, headless: true });
 const page = await browser.newPage({ viewport: { width: 1280, height: 820 } });
 const errors = [];
 page.on('pageerror', (e) => errors.push(e.message));

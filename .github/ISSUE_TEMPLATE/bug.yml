@@ -1,0 +1,26 @@
+name: Bug
+description: Something isn't working
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you got instead.
+    validations:
+      required: true
+  - type: input
+    id: watch
+    attributes:
+      label: Watch model
+      placeholder: Forerunner 265
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and computer
+      placeholder: Chrome 140 on macOS
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Screenshots or the message the setup page showed. Please don't paste your plan link.
