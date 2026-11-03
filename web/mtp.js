@@ -70,7 +70,8 @@ export class GarminUsb {
   get garminMode() {
     const itfs = this.dev.configuration ? this.dev.configuration.interfaces : [];
     const mtp = itfs.some((i) => i.alternates.some((a) => a.interfaceClass === 6 || /mtp/i.test(a.interfaceName || '')));
-    return this.dev.productId === 0x0003 || (!mtp && itfs.length === 1 && !this.dev.productName);
+    // MTP-mode Garmins also use a vendor-class interface and often no product name, so only the product id tells.
+    return this.dev.productId === 0x0003 && !mtp;
   }
 
   async open() {
@@ -149,15 +150,15 @@ export class GarminUsb {
     this.tid++;
     await this.out(this.container(TYPE.command, code, params));
     if (dataOut) {
-      const head = this.container(TYPE.data, code, [], dataOut.byteLength);
-      const all = new Uint8Array(head.byteLength + dataOut.byteLength);
-      all.set(head); all.set(dataOut, head.byteLength);
+      // Header in its own transfer, then the payload (as libmtp does): Garmin's MTP stack doesn't accept
+      // a data phase whose header and payload arrive together.
+      await this.out(this.container(TYPE.data, code, [], dataOut.byteLength));
       const CHUNK = 32 * this.maxPacket;   // whole packets, so only the very end can be short
-      for (let o = 0; o < all.byteLength; o += CHUNK) {
-        await this.out(all.subarray(o, Math.min(all.byteLength, o + CHUNK)));
-        onProgress && onProgress(Math.min(1, (o + CHUNK) / all.byteLength));
+      for (let o = 0; o < dataOut.byteLength; o += CHUNK) {
+        await this.out(dataOut.subarray(o, Math.min(dataOut.byteLength, o + CHUNK)));
+        onProgress && onProgress(Math.min(1, (o + CHUNK) / dataOut.byteLength));
       }
-      if (all.byteLength % this.maxPacket === 0) await this.out(new Uint8Array(0));
+      if (dataOut.byteLength % this.maxPacket === 0) await this.out(new Uint8Array(0));
     }
     let c = await this.inContainer();
     let data = null;
