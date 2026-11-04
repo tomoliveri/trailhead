@@ -13,6 +13,7 @@ PLAN_TO_LOG = {
     'threshold': ('run', 'tempo'), 'vo2': ('run', 'intervals'), 'hills': ('run', 'hills'), 'mp_run': ('run', 'marathon_pace'),
     'xt_easy': ('bike', None), 'xt_intervals': ('bike', None), 'recovery': ('walk', None), 'tt5k': ('run', 'race'),
     'tt10k': ('run', 'race'), 'half': ('run', 'race'), 'race': ('run', 'race'), 'rest': ('walk', None),
+    'runwalk': ('run', 'easy'),
 }
 WATCH_SPORT = {'mobility': 'mobility', 'run': 'run', 'treadmill': 'treadmill', 'trail': 'trail', 'bike': 'bike', 'walk': 'walk',
                'elliptical': 'elliptical', 'row': 'row', 'strength': 'strength', 'rest': 'rest', 'other': 'other'}
@@ -231,7 +232,7 @@ def work_from_steps(w, frac=1.0):
                 thr += m * mult
             elif s.get('name') == 'Hard':
                 vo2 += m * mult
-            elif s.get('name') == 'Marathon pace':
+            elif s.get('name') in ('Marathon pace', 'Race pace'):
                 mp += m * mult
     walk(w.get('steps', []))
     out = {k: round(v * frac, 1) for k, v in (('thr_min', thr), ('vo2_min', vo2), ('mp_min', mp)) if v}

@@ -28,6 +28,7 @@ injury, freshness and iron costs is highest, subject to hard safety rules.
 import numpy as np
 
 from .catalog import MUSCLES
+from . import distances
 from . import physiology as phys
 
 F = np.float32
@@ -53,6 +54,26 @@ DNS_MINUTES = 360.0
 EASY_MIN = 30.0    # shortest easy run offered when the weekly budget is nearly used
 PEAK_WEEK = 480.0  # 7-day running impact ceiling (~65-70 km/week): sub-4 programmes peak at 55-70 km
 DECAY_FAST, DECAY_SLOW = np.exp(-1 / 0.8), np.exp(-1 / 2.5)
+
+# Race distance in force (see distances.py). Module-level because every simulation in a process plans one race;
+# configure() switches it (each browser worker and precook process calls it before planning).
+D = dict(distances.PROFILES['marathon'])
+DIST = 'marathon'
+RACE_M = 42195.0
+
+
+def configure(key):
+    """Switch the model to a race distance ('marathon', 'half', '10k', '5k')."""
+    global D, DIST, RACE_M, PEAK_WEEK, LR_FULL, DNS_MINUTES
+    key = key if key in distances.PROFILES else 'marathon'
+    D = dict(distances.PROFILES[key])
+    DIST = key
+    RACE_M = D['km'] * 1000.0
+    EVENTS['race'] = RACE_M
+    PEAK_WEEK = D['peak_week']
+    LR_FULL = D['lr_full']
+    DNS_MINUTES = 8.5 * D['km']   # a DNS scores as a very slow finish (360 min for the marathon)
+    return key
 
 
 def _shares(d):
@@ -200,7 +221,7 @@ def long_run_deficit(lr):
     """Extra marathon slowdown from a short recent longest run (the 'wall'): ~10 % at 60 min, ~6 % at 90,
     ~3 % at 120, ~1 % at 150, 0 at 170+. Longest runs and weekly volume are the strongest training
     predictors of recreational marathon time (Tanda 2011; Doherty 2020)."""
-    return 0.2 * np.power(np.maximum(0.0, 1 - lr / LR_FULL), 1.6)
+    return D['lr_amp'] * np.power(np.maximum(0.0, 1 - lr / LR_FULL), 1.6)
 
 
 def lr_recency(age):
@@ -216,17 +237,21 @@ def lr_effective(s, ahead=0.0):
     return (s['lr_hist'][:, idx] * lr_recency(age + ahead)[None, :]).max(1)
 
 
-def marathon_minutes(s, base_levels, weight_ratio=1.0):
+def race_minutes(s, base_levels, weight_ratio=1.0):
+    """Race-day finish time (min) for the configured distance."""
     lv = levels(s)
     vdot = vdot_now(s, lv, base_levels, weight_ratio)
-    t = phys.race_time(phys.MARATHON_M, vdot)
-    fade = (1.02 + 0.12 * np.power(1 - lv['D'], 1.3) - 0.025 * lv['M'] + long_run_deficit(lr_effective(s))) \
-        * (1 + s['fade_i'])
+    t = phys.race_time(RACE_M, vdot)
+    fade = (1 + D['base_fade'] + D['dur_fade'] * np.power(1 - lv['D'], 1.3) - 0.025 * lv['M']
+            + long_run_deficit(lr_effective(s))) * (1 + s['fade_i'])
     # Freshness: a proper taper (ATL/CTL ~0.65) is worth ~2-3 % (Bosquet 2007; Wang 2023; Smyth & Lawlor
     # 2021); arriving untapered (ratio ~1) costs ~2 %, over-resting (< 0.4) costs fitness.
     r = s['atl'] / np.maximum(s['ctl'], 1.0)
     taper = 1 + 0.06 * np.clip(r - 0.65, 0, 0.6) + 0.03 * np.maximum(0, 0.4 - r)
     return t * fade * taper, vdot
+
+
+marathon_minutes = race_minutes   # older name
 
 
 # ----------------------------------------------------------------------------- stimuli
@@ -269,17 +294,18 @@ def durations(s, P, ctx):
     w = ctx['day_from_start'] / 7.0
     dtr = ctx['dtr']
     # Stepped taper (thirds of taper_days at 1/3, 2/3 and the full cut): ~0.85 / 0.70 / 0.50 of normal volume.
-    frac = np.clip(1 - dtr / np.maximum(P['taper_days'], 1), 0, 1)
-    tscale = np.where(dtr < P['taper_days'], 1 - P['taper_cut'] * np.ceil(frac * 3) / 3, 1.0)
+    taper_days = P['taper_days'] * D['taper_scale']
+    frac = np.clip(1 - dtr / np.maximum(taper_days, 1), 0, 1)
+    tscale = np.where(dtr < taper_days, 1 - P['taper_cut'] * np.ceil(frac * 3) / 3, 1.0)
     if ctx.get('down'):
         tscale = tscale * 0.8      # planned recovery week
     max30 = s['run_hist'].max(1)
     ref = np.where(max30 > 0, np.maximum(max30, np.minimum(s['ret_ref'], 35.0)), s['ret_ref'])
     # Long run grows from the longest run of the last 30 days (never > 110 %); easy runs stay clearly
     # shorter than the long run, so no ordinary day is itself a spike.
-    L = np.minimum(np.maximum(max30 * (1 + P['lr_growth']), ref), np.minimum(ref * 1.10, P['lr_peak']))
+    L = np.minimum(np.maximum(max30 * (1 + P['lr_growth']), ref), np.minimum(ref * 1.10, P['lr_peak'] * D['lr_scale']))
     if ctx.get('post_event'):
-        L = np.minimum(L, 100.0)   # recovery week after the half
+        L = np.minimum(L, 100.0 * D['lr_scale'])   # recovery week after the half
     E = np.minimum(np.clip(P['easy_base'] + P['easy_growth'] * w, 20, P['easy_cap']), np.maximum(0.8 * L, 20.0))
     # The weekly budget sets run length, not the other way round: after the long run, the rest of the
     # 7-day impact budget is shared by ~3 other runs, so the long run never gets crowded out.
@@ -289,7 +315,7 @@ def durations(s, P, ctx):
     E = E * tscale
     Qt = np.clip(P['thr_base'] + P['thr_growth'] * w, 8, 30) * np.sqrt(tscale)
     Qv = np.clip(P['vo2_base'] + P['vo2_growth'] * w, 6, 20) * np.sqrt(tscale)
-    MPw = np.clip(15 + 1.5 * w, 15, 60) * tscale
+    MPw = np.clip(15 + 1.5 * w, 15, 60) * D['rp_scale'] * tscale   # race-pace minutes (reps for 5/10 km)
     X = P['xt_dur'] * tscale
     cap = cap * tscale         # down weeks and the taper shrink the weekly budget too, not just run lengths
     return dict(E=E.astype(F), L=L.astype(F), Qt=Qt.astype(F), Qv=Qv.astype(F), MPw=MPw.astype(F), X=X.astype(F),
@@ -309,8 +335,8 @@ def candidate_stim(dur, P, n):
     run_min = minutes * RUNNING
     st = {
         'minutes': minutes, 'sys': em, 'aero': em * transfer, 'impact': minutes * impact_rate, 'run_min': run_min,
-        'thr': np.stack([z, z, z, z, z, 0.3 * f * L, Qt, 0.2 * Qv, z, 0.4 * MPw, z, z + 4.8], 1),
-        'vo2': np.stack([z, z, z, z, z, z, z, Qv, z + 3, z, z, z + 9.6], 1),
+        'thr': np.stack([z, z, z, z, z, 0.3 * f * L, Qt, 0.2 * Qv, z, D['rp_thr'] * MPw, z, z + 4.8], 1),
+        'vo2': np.stack([z, z, z, z, z, z, z, Qv, z + 3, D['rp_vo2'] * MPw, z, z + 9.6], 1),
         'nm': np.stack([z, z, z, z + .3, z, z, z + .05, z + .1, z + .6, z, z, z], 1),
         'mp': np.stack([z, z, z, z, z, np.minimum(f * L, 90.0) + 0.1 * L, z, z, z, MPw, z, z], 1),  # builder caps MP at 90
         'dur': 0.3 * run_min + np.maximum(0, run_min - 50) * LONG + np.maximum(0, run_min - 50) * 0.5 * (~LONG),
@@ -359,7 +385,7 @@ def choose(s, P, ctx, readiness=None, rng=None, forced=None):
     hist = s['imp_hist'][:, (s['day'] - np.arange(6)) % 14]   # slot d % 14 = yesterday
     keep = np.zeros(n, F)
     for k, av in enumerate(ahead[:3], start=1):
-        due_k = (av >= dur['L']) & (s['ds_long'] + k >= np.floor(P['long_gap'])) & (dtr - k > 9)
+        due_k = (av >= dur['L']) & (s['ds_long'] + k >= np.floor(P['long_gap'])) & (dtr - k > D['no_long_days'])
         soon |= due_k & (k <= gap_row)
         due_soon |= due_k
         keep = np.where(due_k, np.maximum(keep, hist[:, :6 - k].sum(1)), keep)
@@ -387,20 +413,21 @@ def choose(s, P, ctx, readiness=None, rng=None, forced=None):
     dT = COEF['T'] * np.exp(-s['thr_e'] / REF['T']) / REF['T'] * (0.4 + 0.6 * lv['A'])
     dV = COEF['V'] * np.exp(-s['vo2_e'] / REF['V']) / REF['V'] * (0.3 + 0.7 * lv['A'])
     dN = COEF['N'] * np.exp(-s['nm_e'] / REF['N']) / REF['N'] * P['strength_value']
-    fade_D = 6.7 * np.power(np.maximum(1 - lv['D'], 1e-3), 0.3)
+    fade_D = 6.7 * D['dur_val'] * np.power(np.maximum(1 - lv['D'], 1e-3), 0.3)
     dD = fade_D * np.exp(-s['dur_e'] / REF['D']) / REF['D'] * (0.5 + 0.5 * lv['A'])
     dM = 1.1 * np.exp(-s['mp_e'] / REF['M']) / REF['M'] * (0.3 + 0.7 * lv['D'])
     wc = P['w_compound']
     # Extending the longest recent run reduces race-day fade (~0.38 VDOT points per 1 % of marathon time).
     # Far from the race this is the build-up ladder (longest of the last 6 weeks); in the last 5 weeks it is
     # what will still count on race day, so the final long runs land ~3 weeks out instead of 4.5.
-    if dtr > 35:
+    # Shorter races barely fade from a short long run, so the ladder simply runs until the (short) taper.
+    if dtr > 35 or DIST != 'marathon':
         lr_now = s['lr_hist'].max(1)
         today_w = 1.0
     else:
         lr_now = lr_effective(s, ahead=dtr)
         today_w = float(lr_recency(dtr))
-    d_fade = 0.2 * 1.6 * np.power(np.maximum(0.0, 1 - lr_now / LR_FULL), 0.6) / LR_FULL
+    d_fade = D['lr_amp'] * 1.6 * np.power(np.maximum(0.0, 1 - lr_now / LR_FULL), 0.6) / LR_FULL
     lr_val = (P['w_long'] * 38.0 * d_fade)[:, None] * np.maximum(0.0, today_w * cs['run_min'] - lr_now[:, None])
     val = (cs['aero'] * (dA * (unit(TAU['A']) + wc * compound(TAU['A'])))[:, None]
            + cs['thr'] * (dT * unit(TAU['T']))[:, None]
@@ -455,6 +482,8 @@ def choose(s, P, ctx, readiness=None, rng=None, forced=None):
     ok[hard7] &= ~HARD
     ok[s['ds_long'] < np.floor(P['long_gap'])] &= ~LONG
     ok[:, CI['long_mp']] &= lv['D'] > 0.35
+    if not D['long_rp']:
+        ok[:, CI['long_mp']] = False   # 5 / 10 km: race pace is short reps, not the end of a long run
     ok[:, CI['mp_run']] &= lv['A'] > 0.35
     no_base = s['imp_c'] < 12
     ok[no_base, CI['threshold']] = False
@@ -493,15 +522,22 @@ def choose(s, P, ctx, readiness=None, rng=None, forced=None):
     if readiness is not None:
         ok[readiness < P['ready_hard']] &= ~HARD
         ok[readiness < 0.35] &= LOW
-    if dtr <= 9:
+    if dtr <= D['no_long_days']:
         ok &= ~LONG[None, :]      # last long run >= 10 days out; race week keeps a short MP run instead
     if dtr <= 2:
         ok &= LOW[None, :] | (np.arange(C) == CI['easy'])[None, :]
+    if DIST != 'marathon' and dtr > D['no_long_days'] + 3:
+        # Shorter races: keep the weekly long run (aerobic base) once it has slipped 9+ days, when it is allowed
+        # and fits today. The marathon's long-run value already does this; at 5-21 km race-pace work outscores it.
+        need_long = (s['ds_long'] >= 9) & (ok & LONG[None, :]).any(1)
+        ok[need_long] &= LONG | (np.arange(C) == CI['rest'])
+    else:
+        need_long = np.zeros(n, bool)
     if ctx.get('no_bike'):
         ok[:, CI['xt_intervals']] = False   # travelling: no bike for intervals (easy cross-training = swim / hike)
     ok[:, CI['rest']] = True
     score = np.where(ok, score, -np.inf)
-    score[need_run, CI['rest']] = -1e6
+    score[need_run | need_long, CI['rest']] = -1e6
     prim = score.argmax(1)
     if forced is not None:
         prim = np.where(forced >= 0, forced, prim)
@@ -516,14 +552,14 @@ def choose(s, P, ctx, readiness=None, rng=None, forced=None):
     # Economy gains need ~2x/week for 6-14 weeks and are kept on 1x/week (Blagrove 2018; Llanos-Lagos 2024).
     sec_score[:, 1] = SEC_NM[1] * dN_now - P['w_fatigue'] * SEC_EM[1] * SEC_ECC[1] * ((ml * ml) @ SH_SL) / 100 \
         - P['w_fresh'] * SEC_SYS[1] * (np.exp(-dtr / TAU['atl']) / TAU['atl'] * 0.02) \
-        + np.where((s['ds_sl'] >= 6) & (dtr > 12), 1.1, 0.0)
+        + np.where((s['ds_sl'] >= 6) & (dtr > D['legs_cut']), 1.1, 0.0)
     # Upper body: ~2 sessions / 7 days for the physique goal (no race-day value, so a frequency floor
     # rather than a score; running barely interferes with upper-body hypertrophy: Wilson 2012).
     sec_score[:, 2] = SEC_NM[2] * dN_now + 0.002 + np.where(s['ds_su'] >= 3, 1.0, 0.0) \
         - P['w_fatigue'] * SEC_EM[2] * ((ml * ml) @ SH_SU) / 100
     sec_score[:, 3] = 0.001
     sok = np.ones_like(sec_score, bool)
-    sok[:, 1] &= (s['ds_sl'] >= 2) & (dtr > 12) & (ml[:, LOWER].max(1) < P['max_level']) & ~LONG[prim] & (left >= SEC_MIN[1])
+    sok[:, 1] &= (s['ds_sl'] >= 2) & (dtr > D['legs_cut']) & (ml[:, LOWER].max(1) < P['max_level']) & ~LONG[prim] & (left >= SEC_MIN[1])
     sok[:, 1] &= ~sick
     # Legs: never the day before a likely long run or within 5 days of a checkpoint; 1 / week in the last 7 weeks.
     if ahead:
@@ -719,7 +755,7 @@ def simulate(P, init, cal, rng, base_levels=None, weight_ratio=1.0, collect=Fals
                               minutes=st['minutes'].copy(), impact=st['impact'].copy(),
                               thr=st['thr'].copy(), vo2=st['vo2'].copy(), mp=st['mp'].copy()))
         apply(s, st)
-    t, vdot = marathon_minutes(s, base_levels, weight_ratio)
+    t, vdot = race_minutes(s, base_levels, weight_ratio)
     # Injured on race day = DNS; most minor illness (a cold) still starts, so ~30 % of "sick" count.
     dns = (s['injured'] > 0) | ((s['sick'] > 0) & (U() < 0.3))
     t = np.where(dns, DNS_MINUTES, t)
@@ -738,7 +774,7 @@ def sample_population(seed, n, rng, vdot_sd=2.5, fer_sd=25.0, resp_sd=0.40, fade
         s = new_state(n, seed)
         vb, fer = seed['vdot_base'], seed.get('fer', 80)
     s['resp'] = rng.lognormal(0, resp_sd, n).astype(F)
-    s['fade_i'] = rng.normal(0, fade_sd, n).astype(F)
+    s['fade_i'] = rng.normal(0, fade_sd * D['fade_sd'] / 0.03, n).astype(F)
     s['wfrac'] = rng.uniform(wfrac[0], wfrac[1], n).astype(F)
     s['vdot_base'] = (vb + rng.normal(0, vdot_sd, n)).astype(F)
     s['fer'] = np.clip(fer + rng.normal(0, fer_sd, n), 15, 300).astype(F)

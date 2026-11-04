@@ -1,4 +1,4 @@
-// End-to-end: wizard -> plan saved -> watch pairing + sync + upload -> plan page merges it.
+// End-to-end: wizard -> plan saved -> watch pairing + sync + upload -> plan page merges it; then a Couch to 5K plan.
 // Usage: node tools/test_e2e.mjs [baseUrl]   (screenshots to $OUT, default build/e2e)
 import pw, { chromium, firefox } from 'playwright-core';
 import fs from 'node:fs';
@@ -21,7 +21,11 @@ await page.goto(BASE + '/setup?tune=' + (process.env.TUNE || 20));
 await page.evaluate(() => localStorage.clear());
 await page.goto(BASE + '/setup?tune=' + (process.env.TUNE || 20));
 await shot('01-welcome');
-ok((await page.textContent('h1')).includes('Marathon plan'), 'welcome step renders');
+ok((await page.textContent('h1')).includes('plan setup'), 'welcome step renders');
+ok(await page.locator('#plans .plan').count() === 5, 'five plan types offered');
+await next();
+ok((await page.textContent('#err')).includes('Pick'), 'a plan type must be picked');
+await page.click('[data-plan="marathon"]');
 await next();
 await shot('02-garmin');
 await next();                                   // skip Garmin
@@ -63,7 +67,7 @@ const code = 'TEST' + Math.random().toString(36).slice(2, 6).toUpperCase().repla
 let r = await fetch(BASE + '/api/device/sync', { headers: { Authorization: 'Bearer ' + code } });
 ok(r.status === 404 && (await r.json()).pair === code, 'unpaired watch gets 404 + its code');
 // no watch in CI: mark the install done and continue from the pairing step
-await page.evaluate(() => { const s = JSON.parse(localStorage.getItem('th:setup')); s.installed = 'test'; s.step = 8; localStorage.setItem('th:setup', JSON.stringify(s)); });
+await page.evaluate(() => { const s = JSON.parse(localStorage.getItem('th:setup')); s.installed = 'test'; s.step = 8; localStorage.setItem('th:setup', JSON.stringify(s)); });   // 8 = pair
 await page.reload();
 await page.waitForSelector('#code');
 await page.fill('#code', code.slice(0, 4) + '-' + code.slice(4));
@@ -96,6 +100,29 @@ await page.click('#seasonb');
 await page.waitForSelector('#seasonb:text("Next 3 weeks")', { timeout: 60000 });
 const n = await page.locator('.day').count();
 ok(n > 100, `whole plan to race day: ${n} days`);
+// Couch to 5K: no Garmin / running steps, no tuning, walk/run sessions three times a week
+await page.goto(BASE + '/setup');
+await page.evaluate(() => localStorage.clear());
+await page.goto(BASE + '/setup');
+await page.click('[data-plan="c25k"]');
+ok(await page.locator('#steps li').count() === 8, 'Couch to 5K skips the Garmin and running steps');
+await next();
+ok((await page.textContent('h1')).includes('5 km'), 'finish-date step');
+await next();                                   // default: 9 weeks
+await page.fill('[data-k="profile.athlete.age"]', '44');
+await next();
+await shot('14-c25k-week');
+await next();
+await page.waitForSelector('text=Plan ready', { timeout: 120000 });
+await shot('15-c25k-built');
+const c = await page.evaluate(() => JSON.parse(localStorage.getItem('th:setup')).plan);
+ok(c.progress && c.progress.total === 27 && !c.prediction, `Couch to 5K plan: ${c.progress.total} sessions, 5 km day ${c.progress.finish}`);
+ok(c.first.some((d) => /walk/.test(d.title)), `walk/run sessions: ${c.first.filter((d) => d.kind !== 'rest').map((d) => d.title).join(' | ')}`);
+await page.goto(`${BASE}/p/${c.slug}#k=${c.key}`);
+await page.waitForSelector('.stats', { timeout: 120000 });
+ok((await page.textContent('.stats')).includes('Sessions done'), 'plan page shows Couch to 5K progress');
+ok(await page.locator('#tune').count() === 0, 'no re-tune for Couch to 5K');
+await shot('16-c25k-plan');
 // mobile layout
 await page.setViewportSize({ width: 390, height: 844 });
 await page.goto(BASE + '/');

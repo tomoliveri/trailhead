@@ -2,8 +2,9 @@
 """Precook starting policies over a grid of runner profiles (cross-entropy search, all cores).
 
 The browser starts from the nearest row and refines for a couple of minutes on the runner's real calendar.
-    python3 tools/precook.py --seconds 70          # ~1 h for the full grid on 9 cores
-Writes web/py/precooked.json (rows: features, params, evidence).
+    python3 tools/precook.py --seconds 70                       # marathon: ~1 h for the full grid on 9 cores
+    python3 tools/precook.py --distance 10k --seconds 25        # 5k / 10k / half: a smaller grid
+Writes web/py/precooked.json (rows: features, params, evidence), replacing only the rows of that distance.
 """
 import argparse
 import datetime as dt
@@ -19,23 +20,28 @@ import numpy as np
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, 'web', 'py'))
 import trailhead as T  # noqa: E402
+from engine import distances  # noqa: E402
 from engine import physiology as phys  # noqa: E402
 
 WEEKS = (10, 16, 24, 34)
 VDOT = (30, 36, 42, 50)
 DAYS = (3, 4, 6)
+SHORT_WEEKS = (6, 10, 16)       # 5 km, 10 km and half-marathon plans are shorter
+SHORT_VDOT = (30, 38, 46)
 LAYOUT = {3: ('tue', 'thu', 'sun'), 4: ('tue', 'wed', 'thu', 'sun'), 6: ('mon', 'tue', 'wed', 'thu', 'sat', 'sun')}
 
 
-def profile(weeks, vdot, days, today):
+def profile(weeks, vdot, days, today, distance='marathon'):
     av = {d: {'primary': 0} for d in T.DAYS}
     for d in LAYOUT[days]:
         av[d] = {'primary': 150 if d in ('sat', 'sun') else 60, 'total': 180 if d in ('sat', 'sun') else 80}
     ten_k = float(phys.race_time(10000, vdot))
-    goal = round(float(phys.race_time(phys.MARATHON_M, vdot + 2)) / 5) * 5
+    dp = distances.profile(distance)
+    goal = round(float(phys.race_time(dp['km'] * 1000, vdot + 2)) / dp['goal_round']) * dp['goal_round']
     runs = max(2, days - 1)
     return {'athlete': {'age': 38, 'weight_kg': 70, 'hr_max': 185, 'hr_rest': 55},
-            'race': {'name': 'Marathon', 'date': (today + dt.timedelta(weeks=weeks)).isoformat(), 'goal_min': goal},
+            'race': {'name': dp['label'], 'distance': distance, 'date': (today + dt.timedelta(weeks=weeks)).isoformat(),
+                     'goal_min': goal},
             'recent': {'race_km': 10, 'race_min': round(ten_k, 1), 'date': (today - dt.timedelta(days=10)).isoformat()},
             'current': {'runs_per_week': runs, 'easy_min': 30 + vdot - 30, 'long_min': 50 + (vdot - 30) * 2, 'weeks_running': 8},
             'availability': av}
@@ -87,22 +93,31 @@ def main():
     ap.add_argument('--k', type=int, default=24)
     ap.add_argument('--workers', type=int, default=max(1, (os.cpu_count() or 2) - 1))
     ap.add_argument('--limit', type=int, default=0)
+    ap.add_argument('--distance', default='marathon', choices=distances.RACE_KINDS)
     a = ap.parse_args()
     today = dt.date.today()
     out_path = os.path.join(ROOT, 'web', 'py', 'precooked.json')
+    try:
+        old = json.load(open(out_path))['rows']
+    except (OSError, ValueError, KeyError):
+        old = []
+    keep = [r for r in old if r['features'].get('distance', 'marathon') != a.distance]
     rows = []
-    grid = [(w, v, d) for w in WEEKS for v in VDOT for d in DAYS][: a.limit or None]
+    mara = a.distance == 'marathon'
+    grid = [(w, v, d) for w in (WEEKS if mara else SHORT_WEEKS) for v in (VDOT if mara else SHORT_VDOT)
+            for d in DAYS][: a.limit or None]
     for i, (w, v, d) in enumerate(grid):
-        st = T.new_state(profile(w, v, d, today), today)
+        st = T.new_state(profile(w, v, d, today, a.distance), today)
         theta, gen, ev = tune(st, today, a.seconds, a.pop, a.k, a.workers)
         f = T.features(st, today)
         rows.append({'features': f, 'params': {n: round(float(x), 4) for n, x in zip(T.PARAMS['names'], theta)},
                      'evidence': {'generations': gen, 'mean_min': round(ev['mean'][0], 1), 'default_mean_min': round(ev['mean'][1], 1),
                                   'p_goal_a': round(ev['hit_a'][0], 3), 'default_p_goal_a': round(ev['hit_a'][1], 3),
                                   'inj14': round(ev['inj'][0], 3)}})
-        print(f"[{i + 1}/{len(grid)}] weeks {w} vdot {v} days {d}: {gen} gens, mean {ev['mean'][0]:.1f} "
+        print(f"[{i + 1}/{len(grid)}] {a.distance} weeks {w} vdot {v} days {d}: {gen} gens, mean {ev['mean'][0]:.1f} "
               f"(default {ev['mean'][1]:.1f}), P(A) {ev['hit_a'][0]:.0%} (default {ev['hit_a'][1]:.0%})", flush=True)
-        json.dump({'generated': dt.datetime.now().isoformat(timespec='seconds'), 'rows': rows}, open(out_path, 'w'), indent=1)
+        json.dump({'generated': dt.datetime.now().isoformat(timespec='seconds'), 'rows': keep + rows}, open(out_path, 'w'),
+                  indent=1)
 
 
 if __name__ == '__main__':

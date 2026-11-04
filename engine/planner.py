@@ -516,11 +516,11 @@ def explain(s, info, prim, sec, ctx, cs, P, ready_why, program):
         why.append('Your base is ready for quality; these gains compound under the long runs to come.')
     if c in ('long_mp', 'mp_run'):
         why.append('Race-specific work is most valuable late: it fades within ~3 weeks, so it is timed close to race day.')
-    if c == 'long' and float(info['levels']['D'][0]) < 0.5:
-        why.append('Durability is your biggest lever for the marathon distance.')
+    if c == 'long' and float(info['levels']['D'][0]) < 0.5 and M.DIST in ('marathon', 'half'):
+        why.append(f"Durability is your biggest lever for the {M.D['short']} distance.")
     if sec == 'strength_lower':
         why.append('Legs strength stacked on the same day keeps tomorrow fresh (hard days hard).')
-    if ctx['dtr'] <= float(P['taper_days'][0]) and ctx['dtr'] > 0:
+    if ctx['dtr'] <= float(P['taper_days'][0]) * M.D['taper_scale'] and ctx['dtr'] > 0:
         why.append('Taper: volume down, intensity kept — you arrive fresh (Bosquet 2007).')
     return why[:5]
 

@@ -1,4 +1,7 @@
-"""Trailhead: the marathon engine for anyone, run in the browser (Pyodide) or natively (precooking, tests).
+"""Trailhead: the planning engine for anyone, run in the browser (Pyodide) or natively (precooking, tests).
+
+Race plans (5 km, 10 km, half marathon, marathon) come from the simulation; Couch to 5K is a walk/run
+progression (engine/c25k.py).
 
 Everything specific to the original single-runner app in the shared engine (audiobooks, dated milestones, gym loads, race-specific notes,
 phase-dated nutrition) is switched off here. Profiles come from the setup wizard; state is a plain dict the
@@ -11,7 +14,7 @@ import os
 
 import numpy as np
 
-from engine import builder, device, extras, nutrition, planner, run_learning
+from engine import builder, c25k, device, distances, extras, nutrition, planner, run_learning
 from engine import model as M
 from engine import physiology as phys
 
@@ -109,26 +112,39 @@ def estimate_vdot(profile):
     return 32.0
 
 
-def down_weeks(start, race):
-    """A lighter week every fourth week, the last one at least three weeks before the race."""
+def down_weeks(start, race, kind='marathon'):
+    """A lighter week every fourth week, the last one ending before the taper."""
     mon = start + dt.timedelta(days=(7 - start.weekday()) % 7)
     out, wk = [], mon + dt.timedelta(days=21)
-    while wk <= race - dt.timedelta(days=24):
+    clear = round(21 * distances.profile(kind)['taper_scale']) + 3
+    while wk <= race - dt.timedelta(days=clear):
         out.append(wk.isoformat())
         wk += dt.timedelta(days=28)
     return out
+
+
+def _goal_label(minutes):
+    """h:mm for long races, m:ss under an hour."""
+    return planner.goal_label(minutes) if minutes >= 60 else phys.fmt_hms(minutes)
 
 
 def make_program(profile, today=None):
     today = _d(today or dt.date.today())
     a = profile.get('athlete', {})
     age = int(a.get('age') or 35)
-    race = profile['race']
+    race = dict(profile['race'])
+    kind = distances.key_of({'race': race})
+    if kind == 'c25k' and not race.get('date'):
+        race['date'] = (today + dt.timedelta(weeks=c25k.WEEKS)).isoformat()
     rdate = _d(race['date'])
+    dp = distances.profile(kind)
     goal = float(race.get('goal_min') or 0) or None
     vdot = estimate_vdot(profile)
-    if not goal:   # no goal given: the realistic finish from current fitness, rounded to 5 min
-        goal = math.ceil(phys.race_time(phys.MARATHON_M, vdot + 2.0) / 5) * 5
+    if kind == 'c25k':
+        goal = None
+    elif not goal:   # no goal given: the realistic finish from current fitness, rounded
+        r = dp['goal_round']
+        goal = math.ceil(float(phys.race_time(dp['km'] * 1000, vdot + 2.0)) / r) * r
     av = {}
     for d in DAYS:
         x = (profile.get('availability') or {}).get(d) or {}
@@ -144,9 +160,10 @@ def make_program(profile, today=None):
         'athlete': {'name': a.get('name') or 'Runner', 'age': age, 'sex': a.get('sex') or 'X',
                     'height_cm': float(a.get('height_cm') or 172), 'weight_kg': weight,
                     'target_weight_kg': weight, 'hr_max': hr_max, 'hr_rest': hr_rest, 'ferritin': 100},
-        'race': {'name': race.get('name') or 'Marathon', 'date': rdate.isoformat(),
-                 'start_local': race.get('start_local') or '07:00', 'goal_a_min': goal,
-                 'goal_b_min': goal + 10, 'goal': f'A: {planner.goal_label(goal)} · B: {planner.goal_label(goal + 10)}'},
+        'race': {'name': race.get('name') or ('Couch to 5K' if kind == 'c25k' else dp['label']), 'date': rdate.isoformat(),
+                 'distance': kind, 'start_local': race.get('start_local') or '07:00',
+                 **({'goal_a_min': goal, 'goal_b_min': goal + dp['goal_b'],
+                     'goal': f"A: {_goal_label(goal)} · B: {_goal_label(goal + dp['goal_b'])}"} if goal else {})},
         'timezone': profile.get('tz') or 'UTC',
         'plan_start': today.isoformat(),
         'availability': av,
@@ -155,7 +172,7 @@ def make_program(profile, today=None):
                       'lights_out_lead_min': 30, 'quiet_after': '21:30'},
         'baseline': {'vdot_base': round(vdot, 1), 'fer': 100.0, 'ds_hard': 7, 'ds_long': 7, 'ds_sl': 7, 'ds_su': 7,
                      'vdot_sd': 0.8 if (profile.get('recent') or {}).get('race_min') else 1.6, 'ret_ref': 35},
-        'down_weeks': down_weeks(today, rdate),
+        'down_weeks': [] if kind == 'c25k' else down_weeks(today, rdate, kind),
         'strength': {'upper': bool((profile.get('strength') or {}).get('upper', False))},
     }
     return program
@@ -199,6 +216,7 @@ def history_logs(profile, today=None):
 
 def _program(state, today):
     program = json.loads(json.dumps(state['program']))
+    M.configure(distances.key_of(program))
     policy = state.get('policy') or {}
     program['_policy'] = {**{n: float(M.P_DEFAULT[i]) for i, n in enumerate(M.PARAM_NAMES)}, **policy}
     program['_race'] = _d(program['race']['date'])
@@ -207,10 +225,16 @@ def _program(state, today):
     return program
 
 
+def is_c25k(state):
+    return distances.key_of(state.get('program') or {'race': (state.get('profile') or {}).get('race')}) == 'c25k'
+
+
 def new_state(profile, today=None):
     today = _d(today or dt.date.today())
-    return {'v': 1, 'profile': profile, 'program': make_program(profile, today),
-            'logs': history_logs(profile, today), 'checkins': {}, 'policy': None, 'created': today.isoformat()}
+    program = make_program(profile, today)
+    logs = [] if distances.key_of(program) == 'c25k' else history_logs(profile, today)
+    return {'v': 1, 'profile': profile, 'program': program,
+            'logs': logs, 'checkins': {}, 'policy': None, 'created': today.isoformat()}
 
 
 # --------------------------------------------------------------------------- optimiser (shared by browser + precook)
@@ -230,17 +254,18 @@ def tune_context(state, today=None):
     planner.rebase(s, base_lv)
     cal = M.calendar(today, program['_race'], planner.availability(program), program.get('events', {}),
                      program.get('down_weeks', []), overrides=planner.overrides(program))
-    _CTX.update(cal=cal, seed=s, wr=planner.weight_ratio(program, today),
+    _CTX.update(cal=cal, seed=s, wr=planner.weight_ratio(program, today), dist=M.DIST,
                 vdot_sd=float(program['baseline'].get('vdot_sd', 1.0)), goals=planner.goals(program))
     return list(_CTX['goals'])
 
 
-def _soft(t, goal):
-    return 1.0 / (1.0 + np.exp(np.clip((t - goal) / SOFT_MIN, -50, 50)))
+def _soft(t, goal, soft=SOFT_MIN):
+    return 1.0 / (1.0 + np.exp(np.clip((t - goal) / soft, -50, 50)))
 
 
 def evaluate(thetas, k, gen_seed):
     """Score plan versions (rows of thetas) on the same k simulated runners. Returns per-version arrays."""
+    M.configure(_CTX['dist'])
     thetas = np.asarray(thetas, np.float32).reshape(-1, len(M.PARAM_NAMES))
     n = thetas.shape[0]
     rng = np.random.default_rng(int(gen_seed))
@@ -251,8 +276,9 @@ def evaluate(thetas, k, gen_seed):
     t = res['time'].reshape(n, k)
     ga, gb = _CTX['goals']
     linj = (res['long_injuries'] > 0).reshape(n, k)
-    mean_t, pa, pb, pinj = t.mean(1), _soft(t, ga).mean(1), _soft(t, gb).mean(1), linj.mean(1)
-    obj = -(pa + 0.5 * pb) + 0.25 * pinj + 0.002 * mean_t
+    soft = M.D['soft_min']
+    mean_t, pa, pb, pinj = t.mean(1), _soft(t, ga, soft).mean(1), _soft(t, gb, soft).mean(1), linj.mean(1)
+    obj = -(pa + 0.5 * pb) + 0.25 * pinj + 0.002 * mean_t * (42.195 / M.D['km'])
     return {'obj': obj.tolist(), 'mean': mean_t.tolist(), 'pa': pa.tolist(), 'pb': pb.tolist(), 'inj': pinj.tolist(),
             'hit_a': (t < ga).mean(1).tolist(), 'hit_b': (t < gb).mean(1).tolist()}
 
@@ -264,7 +290,7 @@ def features(state, today=None):
     p = state['program']
     weeks = (_d(p['race']['date']) - today).days / 7
     days = sum(1 for d in DAYS if p['availability'][d]['primary'] > 0)
-    return {'weeks': weeks, 'vdot': float(p['baseline']['vdot_base']), 'days': days}
+    return {'weeks': weeks, 'vdot': float(p['baseline']['vdot_base']), 'days': days, 'distance': distances.key_of(p)}
 
 
 def nearest_precooked(state, table, today=None):
@@ -272,6 +298,8 @@ def nearest_precooked(state, table, today=None):
     best, bd = None, 1e9
     for row in table:
         g = row['features']
+        if g.get('distance', 'marathon') != f['distance']:
+            continue
         dist = ((f['weeks'] - g['weeks']) / 6) ** 2 + ((f['vdot'] - g['vdot']) / 5) ** 2 + ((f['days'] - g['days']) / 1.5) ** 2
         if dist < bd:
             best, bd = row, dist
@@ -283,6 +311,8 @@ def nearest_precooked(state, table, today=None):
 def plan(state, today=None, n_days=21, full=False):
     today = _d(today or dt.date.today())
     program = _program(state, today)
+    if is_c25k(state):
+        return program, c25k.plan(program, MemStore(state.get('logs', [])).logs(), today, n_days=n_days, full=full)
     store = MemStore(state.get('logs', []), state.get('checkins'))
     res = planner.plan(program, store, today, n_days=n_days, full=full)
     return program, res
@@ -291,6 +321,8 @@ def plan(state, today=None, n_days=21, full=False):
 def predict(state, today=None, n=400):
     today = _d(today or dt.date.today())
     program = _program(state, today)
+    if is_c25k(state):
+        return None
     store = MemStore(state.get('logs', []), state.get('checkins'))
     s, base_lv, _ = planner.replay(program, store.logs(), store.checkins(), today)
     planner.rebase(s, base_lv)
@@ -357,8 +389,12 @@ def refresh(state, today=None, n_days=21):
     """Everything the web app shows and the watch needs, in one call (JSON string in, JSON-able dict out)."""
     today = _d(today or dt.date.today())
     program, res = plan(state, today, n_days=n_days)
-    pred = predict(state, today)
     days = res['days']
+    if is_c25k(state):
+        return _clean({'days': days, 'weeks': res['weeks'], 'vdot': None, 'prediction': None, 'paces': {},
+                       'progress': res['progress'], 'bundle': watch_bundle(program, days),
+                       'generated_for': today.isoformat(), 'race': program['race'], 'athlete': program['athlete']})
+    pred = predict(state, today)
     return _clean({'days': days, 'weeks': res['weeks'], 'vdot': res['vdot'], 'prediction': pred,
                    'paces': phys.training_paces(res['vdot']), 'bundle': watch_bundle(program, days, pred, vdot=res['vdot']),
                    'generated_for': today.isoformat(), 'race': program['race'], 'athlete': program['athlete']})

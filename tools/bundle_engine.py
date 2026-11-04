@@ -12,7 +12,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 SRC = ROOT / 'engine' if (ROOT / 'engine').is_dir() else ROOT.parent / 'marathon' / 'engine'   # repo copy, else the private source
 DST = ROOT / 'web' / 'py' / 'engine'
 MODULES = ['__init__', 'model', 'planner', 'builder', 'extras', 'nutrition', 'physiology', 'catalog',
-           'run_learning', 'device']
+           'run_learning', 'device', 'distances', 'c25k']
 
 shutil.rmtree(DST, ignore_errors=True)
 DST.mkdir(parents=True)

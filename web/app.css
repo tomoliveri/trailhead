@@ -83,6 +83,14 @@ input:focus, select:focus { border-color: var(--ink); box-shadow: 0 0 0 4px rgba
 .week .row { display: grid; grid-template-columns: 54px 1fr; align-items: center; gap: 12px; }
 .week .row > span { font-weight: 600; font-size: 14px; }
 
+.plans { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+.plan { text-align: left; font: inherit; color: var(--ink); background: rgba(255, 255, 255, .6); border: 1px solid rgba(20, 24, 21, .1);
+  border-radius: 14px; padding: 14px 16px; cursor: pointer; display: grid; gap: 4px; transition: border-color .15s, box-shadow .15s; }
+.plan b { font-size: 16px; }
+.plan small { font-size: 12.5px; color: var(--ink2); line-height: 1.4; }
+.plan:hover { border-color: rgba(20, 24, 21, .3); }
+.plan.sel { background: #fff; border-color: var(--ink); box-shadow: 0 0 0 3px rgba(20, 24, 21, .08); }
+
 .card { background: var(--card); border: 1px solid rgba(255, 255, 255, .7); border-radius: 16px; padding: 18px 20px; }
 .cards { display: grid; gap: 12px; }
 .hint { font-size: 13px; color: var(--mute); line-height: 1.5; }

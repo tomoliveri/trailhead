@@ -4,7 +4,10 @@ import { garmin } from './garmin.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-const fmtMin = (m) => `${Math.floor(m / 60)}:${String(Math.round(m % 60)).padStart(2, '0')}`;
+// h:mm for long races, m:ss under an hour (5 and 10 km)
+const fmtMin = (m) => m < 60 ? `${Math.floor(m)}:${String(Math.round((m % 1) * 60) % 60).padStart(2, '0')}`
+  : `${Math.floor(m / 60)}:${String(Math.round(m % 60)).padStart(2, '0')}`;
+const fmtDate = (d) => new Date(d + 'T12:00').toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
 const pace = (s) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
 const iso = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
 const today = () => iso(new Date());
@@ -89,31 +92,37 @@ function dayRow(d) {
 }
 
 function render() {
-  const p = view.prediction, race = view.race;
+  const p = view.prediction, race = view.race, g = view.progress;
   const days = Math.round((new Date(race.date) - new Date(today())) / 864e5);
   document.title = `Trailhead · ${race.name}`;
   $('#tt').textContent = race.name;
-  $('#sub').textContent = `· ${days} days to go`;
+  $('#sub').textContent = g ? `· 5 km day in ${days} days` : `· ${days} days to go`;
   const logs = (state.logs || []).filter((l) => l.source !== 'history');
-  $('#pane').innerHTML = `
-    <div class="stats">
+  const stats = g ? `
+      <div class="stat"><small>Sessions done</small><div class="big">${g.done}<span style="font-size:20px;color:var(--mute)"> / ${g.total}</span></div></div>
+      <div class="stat"><small>Next session</small><div class="big" style="font-size:26px;margin-top:20px">${g.next ? (g.next === today() ? 'Today' : fmtDate(g.next)) : '–'}</div></div>
+      <div class="stat"><small>5 km day</small><div class="big" style="font-size:26px;margin-top:20px">${fmtDate(g.finish)}</div></div>
+      <div class="stat"><small>Logged</small><div class="big">${logs.length}</div></div>` : `
       <div class="stat"><small>Likely finish</small><div class="big">${fmtMin(p.p50)}</div></div>
       <div class="stat"><small>Chance of ${fmtMin(p.goal_a)}</small><div class="big">${Math.round(p.p_goal_a * 100)}%</div></div>
       <div class="stat"><small>Fitness (VDOT)</small><div class="big">${view.vdot}</div></div>
-      <div class="stat"><small>Logged</small><div class="big">${logs.length}</div></div>
+      <div class="stat"><small>Logged</small><div class="big">${logs.length}</div></div>`;
+  $('#pane').innerHTML = `
+    <div class="stats">${stats}
     </div>
+    ${g ? `<p class="hint">Runs from the watch count as sessions done. Rate a session 9 or 10 out of 10 and it comes round again; more than 10 days off and you go back a week.</p>` : ''}
     <div class="toolbar">
       ${key ? '<button class="btn" id="log">Log a session</button>' : ''}
       ${key && garmin.connected() ? '<button class="btn light" id="gsync">Sync Garmin</button>' : ''}
       ${key && !garmin.connected() ? '<button class="btn light" id="glink">Connect Garmin</button>' : ''}
-      ${key ? '<button class="btn light" id="tune">Re-tune (2 min)</button>' : ''}
+      ${key && !g ? '<button class="btn light" id="tune">Re-tune (2 min)</button>' : ''}
       ${key ? '<button class="btn light" id="pairb">Pair a watch</button>' : ''}
       <button class="btn light" id="seasonb">${season ? 'Next 3 weeks' : 'Whole plan'}</button>
     </div>
     ${key ? '' : '<p class="note">View only. Open your private link to make changes.</p>'}
     <div class="days" id="days">${(season ? season.days : view.days).map(dayRow).join('')}</div>
-    <h3>Paces from your current fitness</h3>
-    <p class="hint">${Object.entries(view.paces).map(([k, v]) => `${k} ${pace(v[0])}–${pace(v[1])}`).join(' · ')} /km</p>`;
+    ${g ? '' : `<h3>Paces from your current fitness</h3>
+    <p class="hint">${Object.entries(view.paces).map(([k, v]) => `${k} ${pace(v[0])}–${pace(v[1])}`).join(' · ')} /km</p>`}`;
   $('#days').onclick = (e) => {
     const row = e.target.closest('.day');
     if (!row) return;

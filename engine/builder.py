@@ -8,6 +8,7 @@ import math
 
 from . import physiology as phys
 from . import extras
+from . import model as M
 from .model import EVENTS
 
 TITLES = {
@@ -28,6 +29,35 @@ TITLES = {
     'half': ('Half-marathon rehearsal', 'Dress rehearsal: shoes, fuel, pacing, routine.'),
     'race': ('MARATHON', 'Everything has been building to this. Run your race.'),
 }
+
+# Distance-specific wording (the table above is the marathon's).
+RACE_TITLES = {
+    'half': {'long': ('Long run', 'The cornerstone of a half: durability and an aerobic engine that lasts.'),
+             'long_mp': ('Long run with half-marathon-pace finish', 'Race rhythm on tired legs: pace, fuel and focus.'),
+             'mp_run': ('Half-marathon-pace run', 'Lock in race rhythm at goal effort.'),
+             'race': ('HALF MARATHON', 'Everything has been building to this. Run your race.')},
+    '10k': {'long': ('Long run', 'Aerobic engine and durability: the base your 10 km speed sits on.'),
+            'mp_run': ('10 km-pace reps', 'Goal pace in chunks, so race pace feels familiar.'),
+            'race': ('10 KM RACE', 'Everything has been building to this. Run your race.')},
+    '5k': {'long': ('Long run', 'Aerobic engine: the bigger it is, the longer you can hold 5 km pace.'),
+           'mp_run': ('5 km-pace reps', 'Goal pace in short reps, so race pace feels familiar.'),
+           'race': ('5 KM RACE', 'Everything has been building to this. Run your race.')},
+}
+
+
+def title_for(kind):
+    return RACE_TITLES.get(M.DIST, {}).get(kind) or TITLES[kind]
+
+
+def race_pace(vdot):
+    """Goal-race pace range (s/km) at this fitness, for the configured distance."""
+    t = float(phys.race_time(M.RACE_M, vdot))
+    p = t * 60 / (M.RACE_M / 1000)
+    w = 3 if M.RACE_M <= 10000 else 4
+    return (p - w, p + w)
+
+
+RP_NAME = 'Race pace'   # step name for goal-pace work at distances other than the marathon
 
 SLOT_HINT = {
     'long': 'Weekend morning', 'long_mp': 'Weekend morning', 'tt5k': 'Morning', 'tt10k': 'Morning', 'half': 'Morning',
@@ -242,7 +272,9 @@ def _band_for(step, kind, sport):
     if name in ('Stride', 'Uphill hard'):
         return None
     if name == 'Race':
-        return {'tt5k': 'race5k', 'tt10k': 'race10k', 'half': 'half', 'race': 'marathon'}[kind]
+        return {'tt5k': 'race5k', 'tt10k': 'race10k', 'half': 'half', 'race': M.D['band']}[kind]
+    if name == RP_NAME:
+        return M.D['band']
     return {'Long run': 'long', 'Steady': 'long', 'Marathon pace': 'marathon', 'Threshold': 'threshold',
             'Hard': 'interval'}.get(name, 'easy')
 
@@ -277,7 +309,10 @@ def build(date, cand, sec, dur, vdot, program, dtr, loads, event=None):
     easy_hr = _hr_target(hr_rest + 0.55 * (hr_max - hr_rest), phys.hr_cap_for('easy', hr_max, hr_rest))
     long_t = _pace_target(paces['long'])
     kind = event or cand
-    title, blurb = TITLES[kind]
+    title, blurb = title_for(kind)
+    rp = race_pace(vdot)
+    mara = M.DIST == 'marathon'
+    rp_name = 'Marathon pace' if mara else RP_NAME
     if kind == 'long' and float(dur['L']) < 50:
         title, blurb = 'Longer easy run', 'Your longest run of the week — builds durability one step at a time (≤10 % jumps).'
     steps, fuel, notes = [], [], []
@@ -309,7 +344,7 @@ def build(date, cand, sec, dur, vdot, program, dtr, loads, event=None):
             mp_min = max(15, min(mp_min, 90))
             steps = [_step('warmup', 10, target=easy, name='Easy start'),
                      _step('active', max(10, total - 10 - mp_min), target=long_t, name='Steady'),
-                     _step('active', mp_min, target=_pace_target(paces['marathon']), name='Marathon pace'),
+                     _step('active', mp_min, target=_pace_target(rp), name=rp_name),
                      _step('cooldown', 5, name='Walk')]
         else:
             steps = [_step('warmup', 10, target=easy, name='Easy start'),
@@ -317,10 +352,13 @@ def build(date, cand, sec, dur, vdot, program, dtr, loads, event=None):
                            note=f"HR under {phys.hr_cap_for('long', hr_max, hr_rest)}"),
                      _step('cooldown', 5, name='Walk')]
         steps[-1]['walk'] = True
-        if total >= 70:
+        if total >= 70 and M.DIST in ('marathon', 'half'):
             rate = 30 if week < 6 else 45 if week < 12 else 60 if week < 17 else 75
+            if not mara:
+                rate = min(rate, 45)
             fuel.append(f"Practise fuelling: ~{rate} g carbs/hour from minute 30 (gel/chews/drink) — gut training "
-                        f"(Costa 2017). Race target is 75 g/h from minute 20.")
+                        f"(Costa 2017). " + ("Race target is 75 g/h from minute 20." if mara else
+                                            "For the race, 30–60 g/h from minute 20 is plenty."))
             fuel_plan = {'first_s': 30 * 60, 'every_s': max(15, round(25 / rate * 60)) * 60}
             fuel.append('Carb-rich dinner the night before; breakfast 2–3 h before.')
         notes.append('Soft surface or treadmill for part of it if calves feel beaten up.')
@@ -346,9 +384,17 @@ def build(date, cand, sec, dur, vdot, program, dtr, loads, event=None):
                                                                           'treadmill 6–8 % incline works'),
                              _step('recovery', 1.5, name='Jog / walk down')]),
                  _step('cooldown', 10, target=easy, name='Cool down')]
+    elif kind == 'mp_run' and M.RACE_M <= 10000:
+        rep = 3 if M.RACE_M <= 5000 else 5
+        n = max(3, round(MPw / rep))
+        steps = [_step('warmup', 15, target=easy, name='Warm up (incl. 3 strides)'),
+                 _repeat(n, [_step('active', rep, target=_pace_target(rp), name=RP_NAME,
+                                   note='Goal race pace: smooth, not a sprint'),
+                             _step('recovery', rep * 0.5, name='Easy jog')]),
+                 _step('cooldown', 8, target=easy, name='Cool down')]
     elif kind == 'mp_run':
         steps = [_step('warmup', 10, target=easy, name='Warm up'),
-                 _step('active', round(MPw), target=_pace_target(paces['marathon']), name='Marathon pace'),
+                 _step('active', round(MPw), target=_pace_target(rp), name=rp_name),
                  _step('cooldown', 5, target=easy, name='Cool down')]
     elif kind == 'xt_easy':
         sport = 'cycling'
@@ -367,16 +413,26 @@ def build(date, cand, sec, dur, vdot, program, dtr, loads, event=None):
         pace = t * 60 / (dist / 1000)
         target = {'type': 'pace', 'fast': round(pace - 3), 'slow': round(pace + 3),
                   'text': f"{phys.fmt_pace(pace)} /km (≈ {phys.fmt_hms(t)})"}
-        warm = [] if kind == 'race' else [_step('warmup', 15, target=easy, name='Warm up + 4 strides')]
+        warm_min = 0 if kind == 'race' and mara else 10 if kind == 'race' and M.DIST == 'half' else 15
+        warm = [_step('warmup', warm_min, target=easy, name='Warm up + 4 strides')] if warm_min else []
         steps = warm + [_step('active', meters=dist, target=target, name='Race',
                               note='Even pace; first km no faster than target')]
         if kind != 'race':
             steps.append(_step('cooldown', 10, target=easy, name='Cool down'))
         if dist > 20000:
-            fuel.append(('75 g carbs/hour (glucose+fructose) from minute 20' if kind == 'race' else
+            fuel.append(('75 g carbs/hour (glucose+fructose) from minute 20' if kind == 'race' and mara else
+                         '30–60 g carbs/hour from minute 20' if kind == 'race' else
                          '60–75 g carbs/hour (glucose+fructose) from minute 20') + '; drink to thirst (~400–700 ml/h).')
             fuel_plan = {'first_s': 25 * 60, 'every_s': 20 * 60}
-        if kind == 'race':
+        if kind == 'race' and not mara:
+            notes.append({'half': 'First 3 km no faster than goal pace; hold it steady through 15 km, then race home.',
+                          '10k': 'Settle into goal pace by 1 km; it should feel controlled to halfway. Push from 7 km.',
+                          '5k': 'Even pace: the first km feels easy and that is right. Hang on through km 3–4, kick the last 400 m.'
+                          }[M.DIST])
+            notes.append('Warm up properly: easy jog, then 4 short strides, finishing 5–10 minutes before the start.')
+            if M.DIST == 'half':
+                fuel.insert(0, 'Carb-rich dinner the night before; breakfast 2–3 h before. A gel 15 min before the start is fine.')
+        if kind == 'race' and mara:
             fuel.insert(0, 'Carb-load ~7 g/kg Friday and ~10 g/kg Saturday, low fibre (Burke 2011; Bussau 2002). '
                            'Breakfast 3 h before. Caffeine ~3 mg/kg 60 min before the start (Guest 2021); optional '
                            '100 mg caffeine gel at 25–30 km. Check what the course provides and carry the rest.')
@@ -391,7 +447,7 @@ def build(date, cand, sec, dur, vdot, program, dtr, loads, event=None):
     }
     if steps:
         workout['minutes'] = total_minutes(steps) if kind not in ('tt5k', 'tt10k', 'half', 'race') else round(
-            float(phys.race_time(EVENTS[kind], vdot)) + (0 if kind == 'race' else 25))
+            float(phys.race_time(EVENTS[kind], vdot)) + (0 if kind == 'race' and mara else 15 if kind == 'race' else 25))
         if sport == 'running':
             workout['km'] = estimate_km(steps, paces)
     else:

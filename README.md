@@ -6,7 +6,7 @@
 
 <p align="center"><a href="https://github.com/tomoliveri/trailhead/actions/workflows/ci.yml"><img src="https://github.com/tomoliveri/trailhead/actions/workflows/ci.yml/badge.svg" alt="CI"></a></p>
 
-<p align="center">Marathon training on your Garmin.<br>
+<p align="center">Running plans on your Garmin: Couch to 5K, 5 km, 10 km, half marathon and marathon.<br>
 Tell it your race and the time you’ve got each week. It builds the plan, puts a coach on your watch, and changes the plan as you train.</p>
 
 <p align="center"><a href="https://garmin.ttnt.cloud"><b>Try it at garmin.ttnt.cloud</b></a> · free · no account</p>
@@ -47,9 +47,19 @@ vívoactive 5 · 6 · Venu 3 · 3S · fēnix 7
 
 More models compile already. They get added once their layouts have been checked on screen.
 
+## Plans
+
+| Plan | What you get |
+|---|---|
+| **Couch to 5K** | No running to 30 minutes non-stop in about 9 weeks, then a 5 km run. Walk/run intervals three times a week, on days with rest between where possible. |
+| **5 km** | Speed and threshold work, 5 km-pace reps, a weekly long run of up to about 75 minutes, and a taper of about a week. |
+| **10 km** | Threshold, VO2 and 10 km-pace reps, long runs up to about 90 minutes, and a taper of about 9 days. |
+| **Half marathon** | Long runs up to about 2 hours (some with a half-marathon-pace finish), threshold and race-pace runs, and a taper of about 12 days. |
+| **Marathon** | Long runs up to about 3 hours, marathon-pace work, recovery every fourth week, and a 3-week taper. |
+
 ## How it works
 
-1. **Your race.** Date, goal, and roughly how much you run now. Optionally sign in to Garmin Connect so your recent runs are used.
+1. **Your plan.** Pick the distance, then the date, goal, and roughly how much you run now. Optionally sign in to Garmin Connect so your recent runs are used.
 2. **Your week.** How long you’ve got each day. The plan fits inside that.
 3. **Your watch.** Plug it in and the app installs straight from the browser (Chrome or Edge; other browsers get a file to copy). Type the code it shows and you’re paired.
 
@@ -63,6 +73,10 @@ The plan comes from a simulation, not a template. Thousands of versions of you t
 - It tracks fatigue per muscle group, running impact per week, and long-run spikes. Sessions that would overload something aren’t offered.
 - Hard days are spaced out, long runs build steadily, recovery weeks come every fourth week, and the last weeks taper.
 - Strength is short: one leg session a week by default.
+
+For 5 km, 10 km and the half, the same model is used with the distance-specific parts scaled: how much a short long run or low durability slows you down late in the race, how long the long run gets, how long the taper is, and what race-pace work means (short reps at 5 and 10 km). Each distance's settings are in [`engine/distances.py`](engine/distances.py).
+
+Couch to 5K is different on purpose. Before someone can run continuously, a fitness simulation has little to go on, so it's a fixed walk/run ladder of 26 sessions plus the 5 km run ([`engine/c25k.py`](engine/c25k.py)). It adapts to what you do: the next session is the one after the last one you finished, a session you rate 9 or 10 out of 10 comes round again, more than 10 days off takes you back a week, and spare days before your 5 km date repeat the later, harder sessions.
 
 Starting points are tuned in advance for common runner profiles. Your browser then fine-tunes for your exact calendar for two minutes before showing the plan.
 
@@ -88,7 +102,7 @@ repo/
 
 ## Status
 
-Marathon only for now. The model is tuned for the marathon distance.
+The model was calibrated on the marathon. The 5 km, 10 km and half-marathon versions scale it with published taper and long-run guidance, but haven't been checked against real race results yet. Couch to 5K uses a fixed walk/run ladder rather than the simulation.
 
 Trailhead is not made by or affiliated with Garmin. Train sensibly, and see a doctor if you’re unsure whether you should be.
 
