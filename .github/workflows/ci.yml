@@ -52,6 +52,21 @@ jobs:
           assert r['days'] and 150 < r['prediction']['p50'] < 400, r['prediction']
           assert s['days'][-1]['kind'] == 'race', s['days'][-1]['kind']
           print('plan ok:', r['days'][0]['title'], round(r['prediction']['p50']), 'min,', len(s['days']), 'days')
+          # every distance: finish time in a sane range, ends on race day, long runs within the distance's ceiling
+          for dist, weeks, lo, hi, lmax in (('half', 12, 75, 200, 135), ('10k', 8, 35, 95, 100), ('5k', 8, 17, 45, 85)):
+              st = T.new_state({'athlete': {'age': 35}, 'race': {'distance': dist, 'date': (today + dt.timedelta(weeks=weeks)).isoformat()},
+                                'recent': {'race_km': 10, 'race_min': 50}, 'current': {'runs_per_week': 4, 'easy_min': 40, 'long_min': 70},
+                                'availability': {d: {'primary': m} for d, m in zip(T.DAYS, (0, 60, 45, 60, 0, 150, 90))}}, today)
+              r, s = T.refresh(st, today), T.season(st, today)
+              longest = max(d['minutes'] for d in s['days'] if d['kind'] in ('long', 'long_mp'))
+              assert lo < r['prediction']['p50'] < hi and s['days'][-1]['kind'] == 'race' and longest <= lmax, (dist, r['prediction'], longest)
+              print(f"{dist} ok: {r['prediction']['p50']:.1f} min, longest run {longest} min")
+          st = T.new_state({'athlete': {'age': 40}, 'race': {'distance': 'c25k'},
+                            'availability': {d: {'primary': 45} for d in T.DAYS}}, today)
+          r, s = T.refresh(st, today), T.season(st, today)
+          sessions = [d for d in s['days'] if d.get('c25k')]
+          assert r['progress']['total'] == 27 and sessions[-1]['kind'] == 'race' and len(sessions) >= 27, r['progress']
+          print('c25k ok:', len(sessions), 'sessions,', sessions[0]['title'], '->', sessions[-1]['title'])
           PY
 
       - name: Browser runtime
