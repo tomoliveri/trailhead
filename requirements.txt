@@ -1,4 +1,4 @@
 # Server: only the Garmin Connect relay needs a package. The plan engine runs in the browser (Pyodide);
 # numpy is only needed to precook starting plans or run the engine natively.
 garminconnect>=0.3.17
-numpy>=2.0
+numpy>=2.5.4
