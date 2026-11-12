@@ -39,24 +39,39 @@ mimetypes.add_type('application/manifest+json', '.webmanifest')
 _local = threading.local()
 
 
+def init_db():
+    os.makedirs(os.path.dirname(DB), exist_ok=True)
+    c = sqlite3.connect(DB, timeout=10)
+    c.execute('PRAGMA journal_mode=WAL')
+    c.executescript('''
+        CREATE TABLE IF NOT EXISTS plans (slug TEXT PRIMARY KEY, key_hash TEXT NOT NULL, state TEXT, bundle TEXT,
+            tz TEXT, created REAL, updated REAL);
+        CREATE TABLE IF NOT EXISTS pairs (code TEXT PRIMARY KEY, slug TEXT NOT NULL, created REAL);
+        CREATE TABLE IF NOT EXISTS inbox (id INTEGER PRIMARY KEY, slug TEXT NOT NULL, client_id TEXT,
+            body TEXT NOT NULL, created REAL);
+        CREATE UNIQUE INDEX IF NOT EXISTS inbox_client ON inbox(slug, client_id);
+        CREATE TABLE IF NOT EXISTS sent (k TEXT PRIMARY KEY, at REAL);
+    ''')
+    c.close()
+
+
 def db():
     c = getattr(_local, 'c', None)
     if c is None:
-        os.makedirs(os.path.dirname(DB), exist_ok=True)
         c = sqlite3.connect(DB, timeout=10)
         c.row_factory = sqlite3.Row
-        c.execute('PRAGMA journal_mode=WAL')
-        c.executescript('''
-            CREATE TABLE IF NOT EXISTS plans (slug TEXT PRIMARY KEY, key_hash TEXT NOT NULL, state TEXT, bundle TEXT,
-                tz TEXT, created REAL, updated REAL);
-            CREATE TABLE IF NOT EXISTS pairs (code TEXT PRIMARY KEY, slug TEXT NOT NULL, created REAL);
-            CREATE TABLE IF NOT EXISTS inbox (id INTEGER PRIMARY KEY, slug TEXT NOT NULL, client_id TEXT,
-                body TEXT NOT NULL, created REAL);
-            CREATE UNIQUE INDEX IF NOT EXISTS inbox_client ON inbox(slug, client_id);
-            CREATE TABLE IF NOT EXISTS sent (k TEXT PRIMARY KEY, at REAL);
-        ''')
         _local.c = c
     return c
+
+
+def close_db():
+    # one connection per request: a leaked one with an open write transaction locks every other writer
+    c = getattr(_local, 'c', None)
+    if c is not None:
+        _local.c = None
+        if c.in_transaction:
+            c.rollback()
+        c.close()
 
 
 def khash(key):
@@ -281,7 +296,7 @@ def watch_sync(auth, query):
                 db().commit()
                 p['n'] = preview
             except sqlite3.IntegrityError:
-                pass
+                db().rollback()
     return 200, p
 
 
@@ -376,6 +391,8 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             traceback.print_exc()
             return self.send_json(500, {'error': 'Server error.'})
+        finally:
+            close_db()
 
     def api(self, method, path, query):
         key = self.headers.get('X-Plan-Key')
@@ -436,7 +453,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == '__main__':
-    db()
+    init_db()
     print(f'trailhead listening on 127.0.0.1:{PORT}', flush=True)
     ThreadingHTTPServer.request_queue_size = 256   # engine workers fetch ~15 files each at once (default backlog: 5)
     ThreadingHTTPServer.daemon_threads = True

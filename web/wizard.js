@@ -510,7 +510,8 @@ async function buildPlan() {
     const out = await engine.call('refresh', { state, today: today() });
     const res = await fetch('/api/plans', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ state, bundle: out.bundle, tz: S.profile.tz }) });
-    if (!res.ok) throw new Error('Could not save the plan. Check your connection and try again.');
+    if (!res.ok) throw new Error(res.status >= 500 ? 'Could not save the plan (server problem). Try again in a minute.'
+      : 'Could not save the plan. Check your connection and try again.');
     const { slug, key } = await res.json();
     const plans = JSON.parse(localStorage.getItem('th:plans') || '[]');
     plans.push({ slug, key, name: state.program.race.name, created: today() });
